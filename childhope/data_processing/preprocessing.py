@@ -1,4 +1,9 @@
+import os
+import numpy as np
 import pandas as pd
+from darts import TimeSeries
+
+
 
 def fill_missing_values(
     df: pd.DataFrame,
@@ -70,3 +75,69 @@ def fill_missing_values(
         raise ValueError("Invalid fill_method. Choose from 'ffill', 'bfill', 'linear', or 'spline'.")
 
     return df
+
+
+
+def prepare_patient_vital_time_series(
+    vitals_file_path: str,
+    vital_sign_columns: list,
+    patient_id_column: str = 'patient_id',
+    datetime_column: str = 'datetime',
+    fill_method: str = 'ffill',
+    resample_frequency: str = '60s'
+) -> list:
+    """
+    Load, clean, and prepare the vital signs dataset for time series analysis,
+    grouping by patients and filling missing values.
+
+    Parameters:
+        vitals_file_path (str): The path to the CSV file containing the anonymized vitals data.
+        vital_sign_columns (list): Columns containing the vital signs data to fill and process.
+        patient_id_column (str): The column name for grouping data by patient. Default is 'patient_id'.
+        datetime_column (str): The column name containing datetime information. Default is 'datetime'.
+        fill_method (str): The method to use for filling missing values in time series.
+                           Options are 'ffill', 'bfill', 'linear', 'spline'.
+        resample_frequency (str): The time frequency for resampling the data. Default is '60s'.
+
+    Returns:
+        list: A list of TimeSeries objects, one for each patient.
+    """
+    # Load the dataset
+    vitals_df = pd.read_csv(vitals_file_path, index_col=0)
+    
+    # Filter out rows with null datetime and set datetime column
+    vitals_df = vitals_df[vitals_df[datetime_column].notnull()]
+    vitals_df[datetime_column] = pd.to_datetime(vitals_df[datetime_column])
+    vitals_df = vitals_df.set_index(datetime_column)
+    
+    # Convert vital sign columns to float and replace -999 with NaN
+    vitals_df[vital_sign_columns] = vitals_df[vital_sign_columns].astype(float)
+    vitals_df[vital_sign_columns] = vitals_df[vital_sign_columns].replace(-999, np.nan)
+
+    # Resample to specified frequency and calculate mean
+    vitals_df = vitals_df.groupby(patient_id_column).resample(resample_frequency)[vital_sign_columns].mean().reset_index()
+
+    time_series_list = []
+    unique_patients = vitals_df[patient_id_column].unique()
+
+    for patient_id in unique_patients:
+        # Filter data for the current patient
+        patient_data = vitals_df[vitals_df[patient_id_column] == patient_id].copy()
+        
+        # Fill missing values using the specified method
+        for column in vital_sign_columns:
+            patient_data = fill_missing_values(patient_data, ts_variable=column, fill_method=fill_method, datetime_col=datetime_column)
+
+        # Set datetime as index for conversion to TimeSeries
+        patient_data = patient_data.set_index(datetime_column)
+
+        # Convert to TimeSeries object
+        ts = TimeSeries.from_dataframe(
+            patient_data,
+            value_cols=vital_sign_columns,
+            fill_missing_dates=True,
+            freq=resample_frequency
+        )
+        time_series_list.append(ts)
+
+    return time_series_list
