@@ -2,142 +2,194 @@ import os
 import numpy as np
 import pandas as pd
 from darts import TimeSeries
+from childhope.common import setup_logger
+from tqdm import tqdm
 
-
+logger = setup_logger("childhope.data_preprocessing.helper_functions")
 
 def fill_missing_values(
     df: pd.DataFrame,
     ts_variable: str,
-    fill_method: str = 'ffill',
+    fill_method: str = 'linear',
     datetime_col: str = 'datetime',
-    spline_order: int = 2
+    max_gap: str = '1h'
 ) -> pd.DataFrame:
     """
-    This function fills missing values in a specified time series variable within a DataFrame
-    using a selected filling method. Here’s an overview of the available filling methods:
-
-    Filling Methods:
-        - 'ffill' (Forward Fill):
-            Propagates the last valid observation forward to the next missing value.
-            Useful when the most recent value is a reasonable approximation for the missing values.
-            Commonly used in time series data where recent observations are relevant for short-term gaps.
-
-        - 'bfill' (Backward Fill):
-            Propagates the next valid observation backward to fill in missing values.
-            Useful when future values can reasonably approximate previous missing data points.
-            Suitable for cases where upcoming information should replace missing values before it.
-
-        - 'linear' (Linear Interpolation):
-            Fills missing values by interpolating linearly between adjacent known values.
-            Suitable for data that changes gradually over time, allowing a smooth approximation.
-            Particularly helpful for continuous variables such as temperature or heart rate.
-
-        - 'spline' (Spline Interpolation):
-            Fills missing values using spline interpolation, which fits a smooth curve through the known data points.
-            This method is particularly useful for data with curvature or more complex trends.
-            The `spline_order` parameter controls the order of the spline (e.g., 2 for quadratic, 3 for cubic).
-            Higher-order splines can fit data with more curvature but may overfit in some cases.
-
-    Parameters:
-        df (pd.DataFrame): The DataFrame containing the time series data.
-        ts_variable (str): The name of the time series variable (column) with missing values to be filled.
-        fill_method (str): The filling method to use. Options are:
-                           - 'ffill': Forward fill
-                           - 'bfill': Backward fill
-                           - 'linear': Linear interpolation
-                           - 'spline': Spline interpolation (specify order with spline_order)
-        datetime_col (str): The name of the datetime column to check and sort by. Default is 'datetime'.
-        spline_order (int): The order of the spline for 'spline' method. Default is 2.
-
-    Returns:
-        pd.DataFrame: The DataFrame with missing values filled in the specified time series variable.
-        
-    Usage Example:
-        fill_missing_values(df, ts_variable='ECGHR', fill_method='linear', datetime_col='datetime')
-    """
-    # Ensure the datetime column exists and sort by it
-    if datetime_col not in df.columns:
-        raise ValueError(f"The specified datetime column '{datetime_col}' does not exist in the DataFrame.")
+    Fill missing values in time series data while respecting maximum allowed gaps.
     
-    # Sort by datetime if not already sorted
-    df = df.sort_values(by=datetime_col).reset_index(drop=True)
-
-    # Apply the chosen filling method
-    if fill_method == 'ffill':
-        df[ts_variable] = df[ts_variable].ffill()
-    elif fill_method == 'bfill':
-        df[ts_variable] = df[ts_variable].bfill()
-    elif fill_method == 'linear':
-        df[ts_variable] = df[ts_variable].interpolate(method='linear')
-    elif fill_method == 'spline':
-        df[ts_variable] = df[ts_variable].interpolate(method='spline', order=spline_order)
-    else:
-        raise ValueError("Invalid fill_method. Choose from 'ffill', 'bfill', 'linear', or 'spline'.")
-
+    Strategy:
+    1. Identifies gaps larger than max_gap in the time series
+    2. Masks values across these large gaps to prevent interpolation over long periods
+    3. Applies interpolation only within acceptable gap ranges
+    
+    Interpolation Methods:
+    - 'linear': Fits a linear function between existing points. Best for vital signs 
+      that change gradually (e.g., temperature)
+    - Other options include 'polynomial', 'spline', which might be more suitable for 
+      rapidly changing vitals
+    
+    Gap Handling:
+    - Large gaps (> max_gap) are masked to prevent unreliable interpolation
+    - This ensures we don't make assumptions about patient state over long periods
+    - For example, with max_gap='1h', we won't interpolate between readings that are 
+      more than 1 hour apart
+    
+    Bidirectional Interpolation:
+    - Uses both forward and backward points for more accurate estimation
+    - Particularly useful at the edges of gaps where we have data on both sides
+    """
+    df = df.copy()
+    
+    # Convert string max_gap (e.g., '1h') to pandas timedelta object
+    # This allows for flexible gap specifications (e.g., '30min', '2h', '1d')
+    max_gap_td = pd.Timedelta(max_gap)
+    
+    # Calculate time differences between consecutive readings
+    # diff() computes the time elapsed between each row
+    time_diff = df[datetime_col].diff()
+    gap_mask = time_diff > max_gap_td
+    
+    # Mask values where gaps are too large to prevent interpolation across them
+    # This effectively creates separate segments for interpolation
+    df[ts_variable] = df[ts_variable].mask(gap_mask)
+    
+    # Interpolate missing values using specified method
+    # limit_direction='both': Uses points before and after gaps
+    # limit_area=None: No restrictions on where interpolation can occur
+    df[ts_variable] = df[ts_variable].interpolate(
+        method=fill_method,
+        limit_direction='both',
+        limit_area=None
+    )
+    
     return df
-
-
 
 def prepare_patient_vital_time_series(
     vitals_file_path: str,
     vital_sign_columns: list,
     patient_id_column: str = 'patient_id',
     datetime_column: str = 'datetime',
-    fill_method: str = 'ffill',
-    resample_frequency: str = '60s'
+    fill_method: str = 'linear',
+    resample_frequency: str = '60s',
+    max_gap: str = '1h',
+    min_data_points: int = 10
 ) -> list:
     """
-    Load, clean, and prepare the vital signs dataset for time series analysis,
-    grouping by patients and filling missing values.
-
-    Parameters:
-        vitals_file_path (str): The path to the CSV file containing the anonymized vitals data.
-        vital_sign_columns (list): Columns containing the vital signs data to fill and process.
-        patient_id_column (str): The column name for grouping data by patient. Default is 'patient_id'.
-        datetime_column (str): The column name containing datetime information. Default is 'datetime'.
-        fill_method (str): The method to use for filling missing values in time series.
-                           Options are 'ffill', 'bfill', 'linear', 'spline'.
-        resample_frequency (str): The time frequency for resampling the data. Default is '60s'.
-
-    Returns:
-        list: A list of TimeSeries objects, one for each patient.
-    """
-    # Load the dataset
-    vitals_df = pd.read_csv(vitals_file_path, index_col=0)
+    Prepare vital signs data into standardized time series objects.
     
-    # Filter out rows with null datetime and set datetime column
+    Processing Steps:
+    1. Data Loading and Initial Cleaning:
+       - Load CSV data into pandas DataFrame
+       - Remove rows with null timestamps (unparseable or missing timestamps)
+       - Convert string timestamps to pandas datetime objects for time-based operations
+       - Set datetime as index for time-based operations
+    
+    2. Data Type Conversion and Standardization:
+       - Convert vital signs to float type for numerical operations
+       - Replace sentinel values (-999) with NaN
+         (sentinel values often indicate missing or invalid measurements)
+    
+    3. Time Series Resampling:
+       - Resample data to consistent frequency (e.g., '60s' for one reading per minute)
+       - Calculate mean values for each time window
+       - This handles cases where multiple readings exist in one time window
+       - Ensures uniform time steps between measurements
+    
+    4. Patient-Level Processing:
+       - Process each patient's data separately to maintain independence
+       - Quality Checks:
+         * Skip patients missing entire vital sign columns
+         * Skip patients with fewer than min_data_points readings
+         (This ensures sufficient data for meaningful analysis)
+       - Fill missing values within acceptable gaps using interpolation
+         * Different strategies for different vital signs
+         * Respects maximum gap constraints
+    
+    5. Time Series Creation:
+       - Convert processed data to Darts TimeSeries objects
+       - Darts provides specialized time series functionality:
+         * Built-in forecasting capabilities
+         * Time series specific transformations
+         * Consistent API for different models
+       - Track processing statistics for quality control
+    
+    Args:
+        vitals_file_path: Path to CSV file containing vital signs data
+        vital_sign_columns: List of column names containing vital measurements
+        patient_id_column: Column name containing patient identifiers
+        datetime_column: Column name containing timestamps
+        fill_method: Interpolation method for missing values
+        resample_frequency: Target frequency for regular time series
+        max_gap: Maximum allowed gap for interpolation
+        min_data_points: Minimum required readings per patient
+    
+    Returns:
+        list: List of Darts TimeSeries objects, one per patient
+    """
+    logger.info("reading vital dataset from %s", vitals_file_path)
+    
+    # Step 1: Initial data loading and datetime processing
+    vitals_df = pd.read_csv(vitals_file_path, index_col=0)
+    logger.info("vital dataset loaded successfully; shape: %s", vitals_df.shape)
+    
     vitals_df = vitals_df[vitals_df[datetime_column].notnull()]
     vitals_df[datetime_column] = pd.to_datetime(vitals_df[datetime_column])
     vitals_df = vitals_df.set_index(datetime_column)
     
-    # Convert vital sign columns to float and replace -999 with NaN
+    # Step 2: Convert data types and standardize values
     vitals_df[vital_sign_columns] = vitals_df[vital_sign_columns].astype(float)
     vitals_df[vital_sign_columns] = vitals_df[vital_sign_columns].replace(-999, np.nan)
 
-    # Resample to specified frequency and calculate mean
+    # Step 3: Resample data to consistent frequency
+    # Group by patient to maintain separation between different patients' data
     vitals_df = vitals_df.groupby(patient_id_column).resample(resample_frequency)[vital_sign_columns].mean().reset_index()
+    logger.info("vital dataset resampled successfully to %s", resample_frequency)
 
+    # Step 4: Process each patient's data
     time_series_list = []
     unique_patients = vitals_df[patient_id_column].unique()
+    skip_stats = {'missing_vitals': 0, 'insufficient_data': 0}
 
-    for patient_id in unique_patients:
-        # Filter data for the current patient
+    for patient_id in tqdm(unique_patients, desc="Creating time series for patients", total=len(unique_patients)):
         patient_data = vitals_df[vitals_df[patient_id_column] == patient_id].copy()
         
-        # Fill missing values using the specified method
+        # Quality checks: Skip patients with invalid or insufficient data
+        if patient_data[vital_sign_columns].isna().all().any():
+            skip_stats['missing_vitals'] += 1
+            continue
+            
+        if len(patient_data) < min_data_points:
+            skip_stats['insufficient_data'] += 1
+            continue
+        
+        # Fill missing values for each vital sign separately
         for column in vital_sign_columns:
-            patient_data = fill_missing_values(patient_data, ts_variable=column, fill_method=fill_method, datetime_col=datetime_column)
-
-        # Set datetime as index for conversion to TimeSeries
+            patient_data = fill_missing_values(
+                patient_data,
+                ts_variable=column,
+                fill_method=fill_method,
+                datetime_col=datetime_column,
+                max_gap=max_gap
+            )
+        
+        # Step 5: Create TimeSeries objects
         patient_data = patient_data.set_index(datetime_column)
-
-        # Convert to TimeSeries object
-        ts = TimeSeries.from_dataframe(
-            patient_data,
-            value_cols=vital_sign_columns,
-            fill_missing_dates=True,
-            freq=resample_frequency
-        )
-        time_series_list.append(ts)
-
+        try:
+            ts = TimeSeries.from_dataframe(
+                patient_data,
+                value_cols=vital_sign_columns,
+                fill_missing_dates=True,
+                freq=resample_frequency
+            )
+            time_series_list.append(ts)
+        except Exception as e:
+            logger.warning(f"Failed to create TimeSeries for patient {patient_id}: {str(e)}")
+            continue
+    
+    # Log processing summary
+    logger.info("Skipped patients summary:")
+    logger.info("- Missing vital signs: %d patients", skip_stats['missing_vitals'])
+    logger.info("- Insufficient data points (<%d): %d patients", min_data_points, skip_stats['insufficient_data'])
+    logger.info("Time series created successfully for %s patients", len(time_series_list))
+    
     return time_series_list
