@@ -23,4 +23,6 @@ if __name__=="__main__":
     profile_ts = ProfileReport(data, title="Time Series EDA", tsmode=True, sortby='datetime')
     profile_ts.to_file(os.path.join(os.path.dirname(__file__), "ts_eda_report.html"))
     
-    logger.info("EDA reporst generated successfully and saved to disk.")
+    logger.info("EDA reports generated successfully and saved to disk.")
+    
+
