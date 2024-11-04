@@ -92,9 +92,18 @@ The `experiments/` directory contains different training approaches. Each experi
 
 Take a look at the baseline LSTM experiment in `experiments/baseline/` for reference implementation, logging setup, and overall structure.
 
+### Comparing Experiments in TensorBoard
 To view and compare all experiments:
 ```bash
 tensorboard --logdir=tensorboard_logs
 ```
 
-This will display all experiments in the same TensorBoard interface, allowing for easy comparison of different approaches.
+This will display all experiments in the same TensorBoard interface. Here are some examples comparing two LSTM implementations - one with a single layer and another with two layers:
+
+#### Training Loss Comparison
+![Training Loss Comparison](tb_tr_loss_tracking_sample.png)
+Track and compare training loss across different experiments to evaluate convergence rates and stability.
+
+#### Validation Loss Comparison
+![Validation Loss Comparison](val_loss_tracking_sample.png)
+Compare validation performance to assess generalization and identify potential overfitting.
