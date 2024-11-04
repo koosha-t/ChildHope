@@ -72,8 +72,9 @@ def prepare_patient_vital_time_series(
     fill_method: str = 'linear',
     resample_frequency: str = '60s',
     max_gap: str = '1h',
-    min_data_points: int = 10
-) -> list:
+    min_data_points: int = 10,
+    test_ratio: float = 0.2
+) -> tuple:
     """
     Prepare vital signs data into standardized time series objects.
     
@@ -124,7 +125,7 @@ def prepare_patient_vital_time_series(
         min_data_points: Minimum required readings per patient
     
     Returns:
-        list: List of Darts TimeSeries objects, one per patient
+        tuple: (train_time_series_list, test_time_series_list)
     """
     logger.info("reading vital dataset from %s", vitals_file_path)
     
@@ -146,14 +147,23 @@ def prepare_patient_vital_time_series(
     logger.info("vital dataset resampled successfully to %s", resample_frequency)
 
     # Step 4: Process each patient's data
-    time_series_list = []
     unique_patients = vitals_df[patient_id_column].unique()
     skip_stats = {'missing_vitals': 0, 'insufficient_data': 0}
-
+    
+    # Split patients into train and test sets
+    np.random.seed(42)  # for reproducibility
+    num_test = int(len(unique_patients) * test_ratio)
+    test_patients = np.random.choice(unique_patients, size=num_test, replace=False)
+    train_patients = np.setdiff1d(unique_patients, test_patients)
+    logger.info(f"Patient split: {len(train_patients)} train, {len(test_patients)} test")
+    
+    train_series = []
+    test_series = []
+    
     for patient_id in tqdm(unique_patients, desc="Creating time series for patients", total=len(unique_patients)):
         patient_data = vitals_df[vitals_df[patient_id_column] == patient_id].copy()
         
-        # Quality checks: Skip patients with invalid or insufficient data
+        # Quality checks
         if patient_data[vital_sign_columns].isna().all().any():
             skip_stats['missing_vitals'] += 1
             continue
@@ -181,15 +191,18 @@ def prepare_patient_vital_time_series(
                 fill_missing_dates=True,
                 freq=resample_frequency
             )
-            time_series_list.append(ts)
+            if patient_id in test_patients:
+                test_series.append(ts)
+            else:
+                train_series.append(ts)
         except Exception as e:
             logger.warning(f"Failed to create TimeSeries for patient {patient_id}: {str(e)}")
             continue
     
-    # Log processing summary
+    # Log final statistics
     logger.info("Skipped patients summary:")
     logger.info("- Missing vital signs: %d patients", skip_stats['missing_vitals'])
     logger.info("- Insufficient data points (<%d): %d patients", min_data_points, skip_stats['insufficient_data'])
-    logger.info("Time series created successfully for %s patients", len(time_series_list))
+    logger.info("Time series created successfully: %d train, %d test", len(train_series), len(test_series))
     
-    return time_series_list
+    return train_series, test_series
