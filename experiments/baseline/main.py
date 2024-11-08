@@ -12,6 +12,7 @@ import pickle
 from childhope.common import setup_logger
 from torch.utils.tensorboard import SummaryWriter
 import datetime
+import matplotlib.pyplot as plt
 
 logger = setup_logger("experiments.baseline_lstm")
 
@@ -285,6 +286,95 @@ if __name__=="__main__":
     # Log final test loss
     writer.add_scalar('Loss/test', test_loss, epoch)
 
-    # Close the writer
+    # Add visualization of model predictions on test cases
+    logger.info("Generating predictions for visualization...")
+    
+    def predict_sequence(model, initial_sequence, num_predictions):
+        """
+        Generate predictions for multiple steps using the model
+        """
+        model.eval()
+        current_sequence = initial_sequence.clone()
+        predictions = []
+        
+        with torch.no_grad():
+            for _ in range(num_predictions):
+                # Get prediction for next step
+                output = model(current_sequence.unsqueeze(0))
+                pred = output.squeeze(0)
+                predictions.append(pred)
+                
+                # Update sequence for next prediction
+                current_sequence = torch.cat([
+                    current_sequence[1:],
+                    pred.unsqueeze(0)
+                ], dim=0)
+        
+        return torch.stack(predictions)
+
+    # Select a few random test patients for visualization
+    num_samples = 5
+    sample_indices = np.random.choice(len(test_series), num_samples, replace=False)
+    
+    for idx in sample_indices:
+        # Get the patient's data and normalize it
+        test_data = test_series[idx].values()
+        test_tensor = torch.tensor(test_data, dtype=torch.float32)
+        test_tensor_norm = (test_tensor - norm_params['mean']) / norm_params['std']
+        
+        # Split into initial sequence (80%) and validation part (20%)
+        split_point = int(0.8 * len(test_data))
+        initial_data_norm = test_tensor_norm[:split_point]
+        validation_data_norm = test_tensor_norm[split_point:]
+        
+        # Create sequences for the initial data (already normalized)
+        initial_sequence = initial_data_norm[-sequence_length:]
+        
+        # Generate predictions (in normalized space)
+        predictions_norm = predict_sequence(
+            model, 
+            initial_sequence.to(device), 
+            num_predictions=len(validation_data_norm)
+        )
+        
+        # Denormalize everything for plotting
+        initial_data = initial_data_norm * norm_params['std'] + norm_params['mean']
+        validation_data = validation_data_norm * norm_params['std'] + norm_params['mean']
+        predictions = predictions_norm * norm_params['std'].to(device) + norm_params['mean'].to(device)
+        predictions = predictions.cpu().numpy()
+        
+        # Create visualization for each vital sign
+        for j, vital_name in enumerate(vital_sign_columns):
+            fig, ax = plt.subplots(figsize=(12, 6))
+            
+            # Plot the last part of initial sequence
+            last_points = 100  # Show last 100 points of initial sequence
+            x_init = range(split_point - last_points, split_point)
+            ax.plot(x_init, initial_data[-last_points:, j], 
+                   'b-', label='Historical Values')
+            
+            # Plot the validation part
+            x_valid = range(split_point, len(test_data))
+            ax.plot(x_valid, validation_data[:, j], 
+                   'g-', label='Actual Values')
+            
+            # Plot the predictions
+            ax.plot(x_valid, predictions[:, j], 
+                   'r--', label='Predicted Values')
+            
+            ax.set_title(f'Patient {idx} - {vital_name} Predictions')
+            ax.set_xlabel('Time Step')
+            ax.set_ylabel('Value')
+            ax.legend()
+            ax.grid(True)
+            
+            # Add to tensorboard
+            writer.add_figure(
+                f'Test_Predictions/Patient_{idx}/{vital_name}',
+                fig,
+                global_step=None
+            )
+            plt.close(fig)
+
     writer.close()
-    logger.info("TensorBoard logging completed")
+    logger.info("Prediction visualization completed")
