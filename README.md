@@ -35,17 +35,19 @@
 childhope/
 ├── models/                    # Neural network architectures
 │   ├── baseline_lstm.py      # Reference LSTM implementation
+│   ├── tide.py              # TiDE (Time-series Dense Encoder) implementation
 │   └── your_model.py         # Add your new architectures here
 ├── data_processing/          # Data preprocessing utilities
 │   ├── preprocessing.py      # Current preprocessing functions
+│   ├── eda.py               # Exploratory Data Analysis utilities
 │   └── your_processing.py    # Add your preprocessing methods here
 └── common/                   # Shared utilities
     └── logger.py             # Logging configuration
 
 experiments/                  # Different training approaches
 ├── baseline/                # Reference LSTM experiment
-├── your_experiment_1/       # Add your experiments here
-└── your_experiment_2/       # Each in its own directory
+├── tide/                    # TiDE model experiments and visualization
+└── your_experiment/         # Add your experiments here
 
 tensorboard_logs/            # Experiment tracking and visualization
 ├── experiment_1_timestamp/  # Training/validation metrics, model behavior
